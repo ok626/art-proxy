@@ -1,99 +1,61 @@
 /**
  * Smart art selector for TMDB images.
  *
- * Architecture:
- *   1. Hard filter: remove anything below minimum quality gates
- *   2. Score each image independently (no "relative to best" anchoring)
- *   3. Sort by score, take top 30%
- *   4. Pick randomly from that pool
+ * Language handling:
+ *   Backdrops — hard filter textless only, fallback to any if none exist
+ *   Posters   — hard filter English only, fallback to original language, then any
+ *
+ * Within the language-filtered pool:
+ *   1. Hard filter: remove below minimum quality gates (resolution, vote count)
+ *   2. Score each image independently
+ *   3. Take top 30% as random pool
+ *   4. Pick randomly
  *   5. Progressive fallback if pool is empty
  */
 
-// ─── Hard filter constants ───────────────────────────────────────────────────
-
 const BACKDROP_MIN_WIDTH = 1280;
 const POSTER_MIN_WIDTH = 500;
-const MIN_VOTES_ABSOLUTE = 3; // ignored only if even the top image doesn't meet it
+const MIN_VOTES_ABSOLUTE = 3;
 
-// ─── Scoring weights ─────────────────────────────────────────────────────────
-
-const WEIGHTS = {
-  backdrop: {
-    voteAverage: 1.5,
-    voteCount: 1.0,
-    resolution: 0.5,
-    textlessBonus: 2.0,
-  },
-  poster: {
-    voteAverage: 1.2,
-    voteCount: 1.0,
-    resolution: 0.3,
-    englishBonus: 3.0,
-    nullLangBonus: 1.0,
-  },
-};
-
-// ─── Scoring ──────────────────────────────────────────────────────────────────
+// ─── Scoring (within an already language-filtered pool) ───────────────────────
 
 function scoreBackdrop(img) {
-  const w = WEIGHTS.backdrop;
   const avg = img.vote_average || 0;
   const cnt = img.vote_count || 0;
   const res = Math.log10((img.width || 0) * (img.height || 0) + 1);
-  const textless = img.iso_639_1 === null ? w.textlessBonus : 0;
-  return avg * w.voteAverage + Math.log10(cnt + 1) * w.voteCount + res * w.resolution + textless;
+  return avg * 1.5 + Math.log10(cnt + 1) * 1.0 + res * 0.5;
 }
 
 function scorePoster(img) {
-  const w = WEIGHTS.poster;
   const avg = img.vote_average || 0;
   const cnt = img.vote_count || 0;
   const res = Math.log10((img.width || 0) * (img.height || 0) + 1);
-  const langBonus = img.iso_639_1 === 'en'
-    ? w.englishBonus
-    : img.iso_639_1 === null
-      ? w.nullLangBonus
-      : 0;
-  return avg * w.voteAverage + Math.log10(cnt + 1) * w.voteCount + res * w.resolution + langBonus;
+  return avg * 1.2 + Math.log10(cnt + 1) * 1.0 + res * 0.3;
 }
 
-// ─── Hard filters ─────────────────────────────────────────────────────────────
+// ─── Hard quality filters ─────────────────────────────────────────────────────
 
-function hardFilterBackdrops(images) {
-  // Check if even the best image fails the vote floor — if so, relax it
-  const sorted = [...images].sort((a, b) => (b.vote_count || 0) - (a.vote_count || 0));
-  const voteFloor = (sorted[0]?.vote_count || 0) >= MIN_VOTES_ABSOLUTE ? MIN_VOTES_ABSOLUTE : 1;
+function getVoteFloor(images) {
+  const maxVotes = Math.max(...images.map(img => img.vote_count || 0));
+  return maxVotes >= MIN_VOTES_ABSOLUTE ? MIN_VOTES_ABSOLUTE : 1;
+}
 
+function applyQualityFilter(images, minWidth) {
+  const voteFloor = getVoteFloor(images);
   return images.filter(img =>
-    (img.width || 0) >= BACKDROP_MIN_WIDTH &&
+    (img.width || 0) >= minWidth &&
     (img.vote_count || 0) >= voteFloor &&
     img.file_path
   );
 }
 
-function hardFilterPosters(images) {
-  const sorted = [...images].sort((a, b) => (b.vote_count || 0) - (a.vote_count || 0));
-  const voteFloor = (sorted[0]?.vote_count || 0) >= MIN_VOTES_ABSOLUTE ? MIN_VOTES_ABSOLUTE : 1;
+// ─── Pool + random selection ──────────────────────────────────────────────────
 
-  return images.filter(img =>
-    (img.width || 0) >= POSTER_MIN_WIDTH &&
-    (img.vote_count || 0) >= voteFloor &&
-    img.file_path
-  );
-}
-
-// ─── Pool selection ───────────────────────────────────────────────────────────
-
-/**
- * Score, sort, and return the top 30% as the random pool.
- * Always guarantees at least 1 candidate (the best).
- */
 function buildPool(images, scoreFn) {
   if (images.length === 0) return [];
   const scored = images
     .map(img => ({ img, score: scoreFn(img) }))
     .sort((a, b) => b.score - a.score);
-
   const poolSize = Math.max(1, Math.ceil(scored.length * 0.30));
   return scored.slice(0, poolSize).map(s => s.img);
 }
@@ -102,48 +64,57 @@ function pickRandom(arr) {
   return arr[Math.floor(Math.random() * arr.length)];
 }
 
+function selectFromPool(images, scoreFn, minWidth) {
+  if (images.length === 0) return null;
+
+  // Try with full quality filter
+  let filtered = applyQualityFilter(images, minWidth);
+
+  // Relax: drop resolution floor
+  if (filtered.length === 0) {
+    filtered = applyQualityFilter(images, 0);
+  }
+
+  // Ultimate fallback: anything with a file_path
+  if (filtered.length === 0) {
+    filtered = images.filter(img => img.file_path);
+  }
+
+  if (filtered.length === 0) return null;
+
+  return pickRandom(buildPool(filtered, scoreFn));
+}
+
 // ─── Public selectors ─────────────────────────────────────────────────────────
 
 /**
- * Select a backdrop. Prefers textless via scoring bonus, not hard filter,
- * so textless images naturally float to the top without excluding everything else.
+ * Backdrops: textless only → fallback to all
  */
 export function selectBackdrop(images) {
   if (!images || images.length === 0) return null;
 
-  // Try with full hard filters
-  let filtered = hardFilterBackdrops(images);
+  const textless = images.filter(img => img.iso_639_1 === null);
 
-  // Fallback: relax resolution floor
-  if (filtered.length === 0) {
-    filtered = images.filter(img => img.file_path);
-  }
-
-  if (filtered.length === 0) return null;
-
-  const pool = buildPool(filtered, scoreBackdrop);
-  return pickRandom(pool);
+  return (
+    selectFromPool(textless, scoreBackdrop, BACKDROP_MIN_WIDTH) ||
+    selectFromPool(images, scoreBackdrop, BACKDROP_MIN_WIDTH)
+  );
 }
 
 /**
- * Select a poster. English is strongly preferred via scoring bonus.
- * Falls back through null-language, then anything valid.
+ * Posters: English only → original language → all
  */
 export function selectPoster(images, originalLanguage) {
   if (!images || images.length === 0) return null;
 
-  // Try with full hard filters
-  let filtered = hardFilterPosters(images);
+  const english = images.filter(img => img.iso_639_1 === 'en');
+  const origLang = originalLanguage && originalLanguage !== 'en'
+    ? images.filter(img => img.iso_639_1 === originalLanguage)
+    : [];
 
-  // Fallback: relax resolution floor
-  if (filtered.length === 0) {
-    filtered = images.filter(img => img.file_path);
-  }
-
-  if (filtered.length === 0) return null;
-
-  // If there are English or null-lang posters, prefer that subset
-  // but don't hard-exclude others — the scoring handles preference
-  const pool = buildPool(filtered, scorePoster);
-  return pickRandom(pool);
+  return (
+    selectFromPool(english, scorePoster, POSTER_MIN_WIDTH) ||
+    selectFromPool(origLang, scorePoster, POSTER_MIN_WIDTH) ||
+    selectFromPool(images, scorePoster, POSTER_MIN_WIDTH)
+  );
 }

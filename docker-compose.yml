@@ -1,6 +1,6 @@
 services:
   tmdb-art-proxy:
-    image: ghcr.io/YOUR_GITHUB_USERNAME/tmdb-art-proxy:latest
+    image: ghcr.io/ok626/art-proxy:latest
     container_name: tmdb-art-proxy
     restart: unless-stopped
     ports:

@@ -20,7 +20,7 @@ function buildPool(images, minLikes) {
   if (filtered.length === 0) return [];
 
   const sorted = [...filtered].sort((a, b) => scoreImage(b) - scoreImage(a));
-  const poolSize = Math.max(1, Math.ceil(sorted.length * 0.30));
+  const poolSize = Math.max(1, Math.ceil(sorted.length * 0.80));
   return sorted.slice(0, poolSize);
 }
 

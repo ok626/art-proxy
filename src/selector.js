@@ -52,15 +52,10 @@ export function selectBackdrop(fanartImages, tmdbPool) {
   const fanartPool = buildFanartPool(
     (fanartImages || []).filter(isTextless)
   );
-  const pool = mergetools(fanartPool, tmdbPool || []);
+  const pool = mergePools(fanartPool, tmdbPool || []);
   return pickRandom(pool);
 }
 
-/**
- * Select a poster.
- * Fanart English pool — if < MIN_POOL_SIZE, supplement with TMDB pool.
- * tmdbPool should already be filtered/scored (from getTmdbPosterPool).
- */
 export function selectPoster(fanartImages, tmdbPool) {
   const fanartPool = buildFanartPool(
     (fanartImages || []).filter(img => img.lang === 'en')

@@ -11,7 +11,7 @@ https://your-domain.com/poster/tmdb:{movie|tv}:{tmdb_id}.jpg
 
 **Examples:**
 ```
-https://your-domain.com/backdrop/tmdb:tv:238.jpg     → Breaking Bad backdrop
+https://your-domain.com/backdrop/tmdb:tv:1396.jpg     → Breaking Bad backdrop
 https://your-domain.com/poster/tmdb:movie:550.jpg    → Fight Club poster
 ```
 

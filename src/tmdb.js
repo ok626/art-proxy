@@ -9,7 +9,7 @@ const IMG_BASE = 'https://image.tmdb.org/t/p/original';
  */
 export async function fetchTmdbImages(type, tmdbId, apiKey) {
   // type is "movie" or "tv"
-  const mediaType = type === 'tv' ? 'tv' : 'movie';
+  const mediaType = type === 'series' ? 'tv' : 'movie';
 
   // Fetch images (include all languages via include_image_language)
   const imagesUrl = `${BASE}/${mediaType}/${tmdbId}/images?api_key=${apiKey}&include_image_language=en,null`;

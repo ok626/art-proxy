@@ -46,8 +46,7 @@ export async function fetchTmdbImages(type, tmdbId, apiKey) {
   return { backdrops, posters, originalLanguage };
 }
 
-// ─── TMDB scoring ─────────────────────────────────────────────────────────────
-// Resolution weighted highest, then vote count, vote average as tiebreaker only
+// ─── Scoring ──────────────────────────────────────────────────────────────────
 
 const BACKDROP_MIN_WIDTH = 1280;
 const POSTER_MIN_WIDTH   = 500;
@@ -67,66 +66,90 @@ function scoreTmdbPoster(img) {
   return votes * 3.0 + res * 1.5 + avg * 0.5;
 }
 
-/**
- * Get scored + filtered TMDB backdrops, normalized to { url }
- * Textless only, min resolution, min votes.
- * Returns top 50% as candidate pool.
- */
+// ─── Backdrop pool ────────────────────────────────────────────────────────────
+
 export function getTmdbBackdropPool(backdrops, size) {
   if (!backdrops || backdrops.length === 0) return [];
 
   const voteFloor = backdrops.some(img => (img.vote_count || 0) >= MIN_VOTES) ? MIN_VOTES : 1;
+  const avgFloor  = backdrops.some(img => (img.vote_average || 0) >= 5.0) ? 5.0 : 0;
 
-  // Textless preferred, fallback to any if none pass filters
+  // Textless + full quality filters
   let candidates = backdrops.filter(img =>
     img.iso_639_1 === null &&
     (img.width || 0) >= BACKDROP_MIN_WIDTH &&
     (img.vote_count || 0) >= voteFloor &&
+    (img.vote_average || 0) >= avgFloor &&
     img.file_path
   );
 
-  // If no textless pass, try textless with relaxed resolution
+  // Relax resolution but keep vote filters
   if (candidates.length === 0) {
     candidates = backdrops.filter(img =>
-      img.iso_639_1 === null && img.file_path
+      img.iso_639_1 === null &&
+      (img.vote_count || 0) >= voteFloor &&
+      (img.vote_average || 0) >= avgFloor &&
+      img.file_path
     );
+  }
+
+  // Relax everything, textless only
+  if (candidates.length === 0) {
+    candidates = backdrops.filter(img => img.iso_639_1 === null && img.file_path);
+  }
+
+  // Ultimate fallback: any backdrop
+  if (candidates.length === 0) {
+    candidates = backdrops.filter(img => img.file_path);
   }
 
   if (candidates.length === 0) return [];
 
   const sorted   = [...candidates].sort((a, b) => scoreTmdbBackdrop(b) - scoreTmdbBackdrop(a));
   const poolSize = Math.max(1, Math.ceil(sorted.length * 0.50));
-  return sorted
-    .slice(0, poolSize)
-    .map(img => ({ url: buildImageUrl(img.file_path, size) }));
+  return sorted.slice(0, poolSize).map(img => ({ url: buildImageUrl(img.file_path, size) }));
 }
 
-/**
- * Get scored + filtered TMDB posters, normalized to { url }
- * English preferred, fallback to original language.
- * Returns top 50% as candidate pool.
- */
+// ─── Poster pool ──────────────────────────────────────────────────────────────
+
 export function getTmdbPosterPool(posters, originalLanguage, size) {
   if (!posters || posters.length === 0) return [];
 
   const voteFloor = posters.some(img => (img.vote_count || 0) >= MIN_VOTES) ? MIN_VOTES : 1;
+  const avgFloor  = posters.some(img => (img.vote_average || 0) >= 5.0) ? 5.0 : 0;
 
   const filterPosters = (imgs) => imgs.filter(img =>
     (img.width || 0) >= POSTER_MIN_WIDTH &&
     (img.vote_count || 0) >= voteFloor &&
+    (img.vote_average || 0) >= avgFloor &&
     img.file_path
   );
 
+  // English + full quality filters
   let candidates = filterPosters(posters.filter(img => img.iso_639_1 === 'en'));
 
-  // Fallback to original language if no English pass filters
+  // Fallback to original language with full quality filters
   if (candidates.length === 0 && originalLanguage && originalLanguage !== 'en') {
     candidates = filterPosters(posters.filter(img => img.iso_639_1 === originalLanguage));
   }
 
-  // Relax resolution/vote filters on English only
+  // Relax resolution + vote filters, English only
+  if (candidates.length === 0) {
+    candidates = posters.filter(img =>
+      img.iso_639_1 === 'en' &&
+      (img.vote_average || 0) >= avgFloor &&
+      img.file_path
+    );
+  }
+
+  // Relax everything, English only
   if (candidates.length === 0) {
     candidates = posters.filter(img => img.iso_639_1 === 'en' && img.file_path);
+  }
+
+  // Ultimate fallback: any poster
+  if (candidates.length === 0) {
+    candidates = posters.filter(img => img.file_path);
   }
 
   if (candidates.length === 0) return [];
@@ -137,6 +160,8 @@ export function getTmdbPosterPool(posters, originalLanguage, size) {
     .slice(0, poolSize)
     .map(img => ({ url: buildImageUrl(img.file_path, size) }));
 }
+
+// ─── Utils ────────────────────────────────────────────────────────────────────
 
 export function buildImageUrl(filePath, size = 'original') {
   return `https://image.tmdb.org/t/p/${size}${filePath}`;

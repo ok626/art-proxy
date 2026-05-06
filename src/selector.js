@@ -33,22 +33,14 @@ function scoreImage(img) {
 function buildPool(images, minLikes) {
   if (images.length === 0) return [];
 
-  // Apply likes floor
   let filtered = images.filter(img => img.likes >= minLikes);
 
-  // Relax: accept anything with at least 1 like
   if (filtered.length === 0) {
     filtered = images.filter(img => img.likes >= 1);
   }
 
-  // Ultimate fallback: accept any valid image
-  if (filtered.length === 0) {
-    filtered = images.filter(img => img.url);
-  }
-
   if (filtered.length === 0) return [];
 
-  // Sort by likes desc, take top 30%
   const sorted = [...filtered].sort((a, b) => scoreImage(b) - scoreImage(a));
   const poolSize = Math.max(1, Math.ceil(sorted.length * 0.30));
   return sorted.slice(0, poolSize);

@@ -34,7 +34,7 @@ function pickRandom(arr) {
  * If Fanart pool >= MIN_POOL_SIZE, use Fanart only.
  * Otherwise supplement with TMDB candidates (deduped by url).
  */
-function mergepools(fanartPool, tmdbPool) {
+function mergePools(fanartPool, tmdbPool) {
   if (fanartPool.length >= MIN_POOL_SIZE) return fanartPool;
 
   // Supplement with TMDB, deduping by url

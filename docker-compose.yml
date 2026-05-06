@@ -1,0 +1,14 @@
+services:
+  tmdb-art-proxy:
+    image: ghcr.io/YOUR_GITHUB_USERNAME/tmdb-art-proxy:latest
+    container_name: tmdb-art-proxy
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      - TMDB_API_KEY=${TMDB_API_KEY}
+      - PORT=3000
+      - CACHE_REDIRECT=true
+    # Alternatively, use an env_file:
+    # env_file:
+    #   - .env

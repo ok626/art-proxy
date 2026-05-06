@@ -1,49 +1,70 @@
-const MIN_LIKES = parseInt(process.env.FANART_MIN_LIKES || '5', 10);
+const MIN_LIKES     = parseInt(process.env.FANART_MIN_LIKES    || '5',  10);
+const MIN_POOL_SIZE = parseInt(process.env.FANART_MIN_POOL_SIZE || '8',  10);
 
 function isTextless(img) {
   return img.lang === '' || img.lang === '00';
 }
 
-function scoreImage(img) {
-  return img.likes;
-}
-
-function buildPool(images, minLikes) {
+/**
+ * Build a pool of Fanart candidates.
+ * Returns normalized { url } objects, sorted by likes, top 50%.
+ * Returns empty array if nothing passes the likes floor.
+ */
+function buildFanartPool(images) {
   if (images.length === 0) return [];
 
-  let filtered = images.filter(img => img.likes >= minLikes);
-
+  let filtered = images.filter(img => img.likes >= MIN_LIKES);
   if (filtered.length === 0) {
     filtered = images.filter(img => img.likes >= 1);
   }
-
   if (filtered.length === 0) return [];
 
-  const sorted = [...filtered].sort((a, b) => scoreImage(b) - scoreImage(a));
-  const poolSize = Math.max(1, Math.ceil(sorted.length * 0.80));
-  return sorted.slice(0, poolSize);
+  const sorted   = [...filtered].sort((a, b) => b.likes - a.likes);
+  const poolSize = Math.max(1, Math.ceil(sorted.length * 0.50));
+  return sorted.slice(0, poolSize).map(img => ({ url: img.url }));
 }
 
 function pickRandom(arr) {
-  return arr[Math.floor(Math.random() * arr.length)] || null;
+  if (!arr || arr.length === 0) return null;
+  return arr[Math.floor(Math.random() * arr.length)];
 }
 
 /**
- * Backdrops: textless only, no Fanart fallback to other languages.
- * Returns null if nothing good → server falls back to TMDB.
+ * Merge Fanart pool with TMDB pool if Fanart doesn't have enough variety.
+ * If Fanart pool >= MIN_POOL_SIZE, use Fanart only.
+ * Otherwise supplement with TMDB candidates (deduped by url).
  */
-export function selectBackdrop(images) {
-  if (!images || images.length === 0) return null;
-  const textless = images.filter(isTextless);
-  return pickRandom(buildPool(textless, MIN_LIKES));
+function mergepools(fanartPool, tmdbPool) {
+  if (fanartPool.length >= MIN_POOL_SIZE) return fanartPool;
+
+  // Supplement with TMDB, deduping by url
+  const seen = new Set(fanartPool.map(img => img.url));
+  const extras = tmdbPool.filter(img => !seen.has(img.url));
+  return [...fanartPool, ...extras];
 }
 
 /**
- * Posters: English only, no Fanart fallback to other languages.
- * Returns null if nothing good → server falls back to TMDB.
+ * Select a backdrop.
+ * Fanart textless pool — if < MIN_POOL_SIZE, supplement with TMDB pool.
+ * tmdbPool should already be filtered/scored (from getTmdbBackdropPool).
  */
-export function selectPoster(images) {
-  if (!images || images.length === 0) return null;
-  const english = images.filter(img => img.lang === 'en');
-  return pickRandom(buildPool(english, MIN_LIKES));
+export function selectBackdrop(fanartImages, tmdbPool) {
+  const fanartPool = buildFanartPool(
+    (fanartImages || []).filter(isTextless)
+  );
+  const pool = mergetools(fanartPool, tmdbPool || []);
+  return pickRandom(pool);
+}
+
+/**
+ * Select a poster.
+ * Fanart English pool — if < MIN_POOL_SIZE, supplement with TMDB pool.
+ * tmdbPool should already be filtered/scored (from getTmdbPosterPool).
+ */
+export function selectPoster(fanartImages, tmdbPool) {
+  const fanartPool = buildFanartPool(
+    (fanartImages || []).filter(img => img.lang === 'en')
+  );
+  const pool = mergePools(fanartPool, tmdbPool || []);
+  return pickRandom(pool);
 }

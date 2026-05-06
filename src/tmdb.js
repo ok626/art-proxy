@@ -54,17 +54,17 @@ const POSTER_MIN_WIDTH   = 500;
 const MIN_VOTES          = 3;
 
 function scoreTmdbBackdrop(img) {
-  const res      = Math.log10((img.width || 0) * (img.height || 0) + 1);
-  const votes    = Math.log10((img.vote_count || 0) + 1);
-  const avg      = img.vote_average || 0;
-  return res * 3.0 + votes * 2.0 + avg * 0.5;
+  const res   = Math.log10((img.width || 0) * (img.height || 0) + 1);
+  const votes = Math.log10((img.vote_count || 0) + 1);
+  const avg   = img.vote_average || 0;
+  return votes * 3.0 + res * 2.0 + avg * 0.5;
 }
 
 function scoreTmdbPoster(img) {
-  const res      = Math.log10((img.width || 0) * (img.height || 0) + 1);
-  const votes    = Math.log10((img.vote_count || 0) + 1);
-  const avg      = img.vote_average || 0;
-  return res * 2.0 + votes * 2.0 + avg * 0.5;
+  const res   = Math.log10((img.width || 0) * (img.height || 0) + 1);
+  const votes = Math.log10((img.vote_count || 0) + 1);
+  const avg   = img.vote_average || 0;
+  return votes * 3.0 + res * 1.5 + avg * 0.5;
 }
 
 /**

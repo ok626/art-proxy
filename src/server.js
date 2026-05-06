@@ -23,7 +23,7 @@ function parseParam(param) {
   const parts = clean.split(':');
   if (parts.length !== 3 || parts[0] !== 'tmdb') return null;
   const [, type, tmdbId] = parts;
-  if (!['movie', 'tv'].includes(type)) return null;
+  if (!['movie', 'series'].includes(type)) return null;
   if (!/^\d+$/.test(tmdbId)) return null;
   return { type, tmdbId };
 }

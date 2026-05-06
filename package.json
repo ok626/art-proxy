@@ -2,6 +2,7 @@
   "name": "tmdb-art-proxy",
   "version": "1.0.0",
   "description": "Self-hostable TMDB art proxy for Stremio addons",
+  "type": "module",
   "main": "src/server.js",
   "scripts": {
     "start": "node src/server.js",

@@ -115,8 +115,11 @@ export function getTmdbBackdropPool(backdrops, size) {
 export function getTmdbPosterPool(posters, originalLanguage, size) {
   if (!posters || posters.length === 0) return [];
 
-  const voteFloor = posters.some(img => (img.vote_count || 0) >= MIN_VOTES) ? MIN_VOTES : 1;
-  const avgFloor  = posters.some(img => (img.vote_average || 0) >= 5.0) ? 5.0 : 0;
+  const englishPosters = posters.filter(img => img.iso_639_1 === 'en');
+  const relevantPosters = englishPosters.length > 0 ? englishPosters : posters;
+
+  const voteFloor = relevantPosters.some(img => (img.vote_count || 0) >= MIN_VOTES) ? MIN_VOTES : 1;
+  const avgFloor  = relevantPosters.some(img => (img.vote_average || 0) >= 5.0) ? 5.0 : 0;
 
   const filterPosters = (imgs) => imgs.filter(img =>
     (img.width || 0) >= POSTER_MIN_WIDTH &&

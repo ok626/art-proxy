@@ -32,7 +32,7 @@ docker run -d \
   -e TMDB_API_KEY=your_api_key_here \
   --name tmdb-art-proxy \
   --restart unless-stopped \
-  ghcr.io/YOUR_GITHUB_USERNAME/tmdb-art-proxy:latest
+  ghcr.io/ok626/art-proxy:latest
 ```
 
 ## Docker Compose

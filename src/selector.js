@@ -1,181 +1,149 @@
 /**
  * Smart art selector for TMDB images.
  *
- * Strategy:
- *   1. Filter by language preference (textless for backdrops, "en" for posters)
- *   2. Among those, find the "best" image (highest score = weighted vote_average * log(vote_count+1) * resolution)
- *   3. Build a candidate pool: images that are "close enough" to the best
- *   4. Pick randomly from the pool
- *   5. If pool is empty, progressively relax filters and retry
+ * Architecture:
+ *   1. Hard filter: remove anything below minimum quality gates
+ *   2. Score each image independently (no "relative to best" anchoring)
+ *   3. Sort by score, take top 30%
+ *   4. Pick randomly from that pool
+ *   5. Progressive fallback if pool is empty
  */
 
-const MIN_ABSOLUTE_VOTES = 3;
+// ─── Hard filter constants ───────────────────────────────────────────────────
 
-/**
- * Resolution score: width * height (pixels)
- */
-function resolutionScore(img) {
-  return (img.width || 0) * (img.height || 0);
-}
+const BACKDROP_MIN_WIDTH = 1280;
+const POSTER_MIN_WIDTH = 500;
+const MIN_VOTES_ABSOLUTE = 3; // ignored only if even the top image doesn't meet it
 
-/**
- * Composite quality score used to rank images.
- * Weights: vote_average heavily, vote_count logarithmically, resolution as tiebreaker.
- */
-function qualityScore(img) {
+// ─── Scoring weights ─────────────────────────────────────────────────────────
+
+const WEIGHTS = {
+  backdrop: {
+    voteAverage: 1.5,
+    voteCount: 1.0,
+    resolution: 0.5,
+    textlessBonus: 2.0,
+  },
+  poster: {
+    voteAverage: 1.2,
+    voteCount: 1.0,
+    resolution: 0.3,
+    englishBonus: 3.0,
+    nullLangBonus: 1.0,
+  },
+};
+
+// ─── Scoring ──────────────────────────────────────────────────────────────────
+
+function scoreBackdrop(img) {
+  const w = WEIGHTS.backdrop;
   const avg = img.vote_average || 0;
   const cnt = img.vote_count || 0;
-  const res = resolutionScore(img);
-  // log scale for vote count so 1000 votes isn't 1000x better than 1 vote
-  return avg * Math.log10(cnt + 2) * Math.log10(res + 1);
+  const res = Math.log10((img.width || 0) * (img.height || 0) + 1);
+  const textless = img.iso_639_1 === null ? w.textlessBonus : 0;
+  return avg * w.voteAverage + Math.log10(cnt + 1) * w.voteCount + res * w.resolution + textless;
 }
 
-/**
- * Determine the absolute minimum vote count to consider.
- * If even the best image doesn't hit MIN_ABSOLUTE_VOTES, we relax the floor to 1.
- */
-function getVoteFloor(best) {
-  return (best.vote_count || 0) >= MIN_ABSOLUTE_VOTES ? MIN_ABSOLUTE_VOTES : 1;
+function scorePoster(img) {
+  const w = WEIGHTS.poster;
+  const avg = img.vote_average || 0;
+  const cnt = img.vote_count || 0;
+  const res = Math.log10((img.width || 0) * (img.height || 0) + 1);
+  const langBonus = img.iso_639_1 === 'en'
+    ? w.englishBonus
+    : img.iso_639_1 === null
+      ? w.nullLangBonus
+      : 0;
+  return avg * w.voteAverage + Math.log10(cnt + 1) * w.voteCount + res * w.resolution + langBonus;
 }
 
-/**
- * Build a candidate pool from a sorted list of images.
- *
- * Thresholds (all relative to the best image):
- *   - vote_average >= 40% of best's average
- *   - vote_count   >= 30% of best's count  (and >= absolute floor)
- *   - resolution   >= 50% of best's resolution pixels
- *     (e.g. best is 4K → floor is ~2.8MP which is roughly 1920x1440,
- *      so 1080p still qualifies since 2.07M >= 50% of 8.29M? No — 1080p is 25%.)
- *
- * Resolution logic is deliberately generous:
- *   if best >= 4K (8.29MP), floor = 1080p (2.07MP) — roughly 25% floor
- *   we use a stepped floor instead of strict 50% to match your UX intent.
- */
-function resolutionFloor(bestRes) {
-  // Stepped resolution floors
-  const p4k = 3840 * 2160; // 8,294,400
-  const p1080 = 1920 * 1080; // 2,073,600
-  const p720 = 1280 * 720; //   921,600
+// ─── Hard filters ─────────────────────────────────────────────────────────────
 
-  if (bestRes >= p4k) return p1080;      // best is 4K → floor is 1080p
-  if (bestRes >= p1080) return p720;     // best is 1080p → floor is 720p
-  return Math.floor(bestRes * 0.5);      // best is low → floor is 50% of it
+function hardFilterBackdrops(images) {
+  // Check if even the best image fails the vote floor — if so, relax it
+  const sorted = [...images].sort((a, b) => (b.vote_count || 0) - (a.vote_count || 0));
+  const voteFloor = (sorted[0]?.vote_count || 0) >= MIN_VOTES_ABSOLUTE ? MIN_VOTES_ABSOLUTE : 1;
+
+  return images.filter(img =>
+    (img.width || 0) >= BACKDROP_MIN_WIDTH &&
+    (img.vote_count || 0) >= voteFloor &&
+    img.file_path
+  );
 }
 
-/**
- * Core filtering function.
- * @param {Array} images - TMDB image objects
- * @param {Object} opts
- * @param {boolean} opts.relaxVoteAverage
- * @param {boolean} opts.relaxVoteCount
- * @param {boolean} opts.relaxResolution
- */
-function filterCandidates(images, best, opts = {}) {
-  const bestRes = resolutionScore(best);
-  const resFloor = resolutionFloor(bestRes);
-  const voteFloor = getVoteFloor(best);
+function hardFilterPosters(images) {
+  const sorted = [...images].sort((a, b) => (b.vote_count || 0) - (a.vote_count || 0));
+  const voteFloor = (sorted[0]?.vote_count || 0) >= MIN_VOTES_ABSOLUTE ? MIN_VOTES_ABSOLUTE : 1;
 
-  const avgFloor = opts.relaxVoteAverage ? 0 : (best.vote_average || 0) * 0.40;
-  const cntFloor = opts.relaxVoteCount ? voteFloor : Math.max(voteFloor, Math.floor((best.vote_count || 0) * 0.30));
-  const rFloor = opts.relaxResolution ? 0 : resFloor;
-
-  return images.filter(img => {
-    if ((img.vote_count || 0) < voteFloor && !opts.relaxVoteCount) return false; // hard floor unless relaxed
-    if ((img.vote_average || 0) < avgFloor) return false;
-    if ((img.vote_count || 0) < cntFloor) return false;
-    if (resolutionScore(img) < rFloor) return false;
-    return true;
-  });
+  return images.filter(img =>
+    (img.width || 0) >= POSTER_MIN_WIDTH &&
+    (img.vote_count || 0) >= voteFloor &&
+    img.file_path
+  );
 }
 
+// ─── Pool selection ───────────────────────────────────────────────────────────
+
 /**
- * Pick a random element from an array.
+ * Score, sort, and return the top 30% as the random pool.
+ * Always guarantees at least 1 candidate (the best).
  */
+function buildPool(images, scoreFn) {
+  if (images.length === 0) return [];
+  const scored = images
+    .map(img => ({ img, score: scoreFn(img) }))
+    .sort((a, b) => b.score - a.score);
+
+  const poolSize = Math.max(1, Math.ceil(scored.length * 0.30));
+  return scored.slice(0, poolSize).map(s => s.img);
+}
+
 function pickRandom(arr) {
   return arr[Math.floor(Math.random() * arr.length)];
 }
 
+// ─── Public selectors ─────────────────────────────────────────────────────────
+
 /**
- * Main selector for BACKDROP images.
- * Prefers textless (iso_639_1 === null), falls back to any.
- *
- * @param {Array} images - raw TMDB backdrops array
- * @returns {Object|null} chosen image object or null
+ * Select a backdrop. Prefers textless via scoring bonus, not hard filter,
+ * so textless images naturally float to the top without excluding everything else.
  */
-function selectBackdrop(images) {
+export function selectBackdrop(images) {
   if (!images || images.length === 0) return null;
 
-  // Separate textless vs. language-tagged
-  const textless = images.filter(img => img.iso_639_1 === null);
-  const anyLang = images;
+  // Try with full hard filters
+  let filtered = hardFilterBackdrops(images);
 
-  for (const pool of [textless, anyLang]) {
-    if (pool.length === 0) continue;
-
-    // Sort by quality score descending
-    const sorted = [...pool].sort((a, b) => qualityScore(b) - qualityScore(a));
-    const best = sorted[0];
-
-    // Progressive relaxation: try strict → relax vote_average → relax vote_count → relax resolution
-    const relaxationSteps = [
-      {},
-      { relaxVoteAverage: true },
-      { relaxVoteAverage: true, relaxVoteCount: true },
-      { relaxVoteAverage: true, relaxVoteCount: true, relaxResolution: true },
-    ];
-
-    for (const relaxOpts of relaxationSteps) {
-      const candidates = filterCandidates(sorted, best, relaxOpts);
-      if (candidates.length > 0) return pickRandom(candidates);
-    }
-
-    // Ultimate fallback: just return the best
-    return best;
+  // Fallback: relax resolution floor
+  if (filtered.length === 0) {
+    filtered = images.filter(img => img.file_path);
   }
 
-  return null;
+  if (filtered.length === 0) return null;
+
+  const pool = buildPool(filtered, scoreBackdrop);
+  return pickRandom(pool);
 }
 
 /**
- * Main selector for POSTER images.
- * Prefers English (iso_639_1 === "en"), falls back to original language, then any.
- *
- * @param {Array} images - raw TMDB posters array
- * @param {string} [originalLanguage] - e.g. "ko", "ja" — the show's original language
- * @returns {Object|null}
+ * Select a poster. English is strongly preferred via scoring bonus.
+ * Falls back through null-language, then anything valid.
  */
-function selectPoster(images, originalLanguage) {
+export function selectPoster(images, originalLanguage) {
   if (!images || images.length === 0) return null;
 
-  const english = images.filter(img => img.iso_639_1 === 'en');
-  const origLang = originalLanguage
-    ? images.filter(img => img.iso_639_1 === originalLanguage)
-    : [];
-  const anyLang = images;
+  // Try with full hard filters
+  let filtered = hardFilterPosters(images);
 
-  for (const pool of [english, origLang, anyLang]) {
-    if (pool.length === 0) continue;
-
-    const sorted = [...pool].sort((a, b) => qualityScore(b) - qualityScore(a));
-    const best = sorted[0];
-
-    const relaxationSteps = [
-      {},
-      { relaxVoteAverage: true },
-      { relaxVoteAverage: true, relaxVoteCount: true },
-      { relaxVoteAverage: true, relaxVoteCount: true, relaxResolution: true },
-    ];
-
-    for (const relaxOpts of relaxationSteps) {
-      const candidates = filterCandidates(sorted, best, relaxOpts);
-      if (candidates.length > 0) return pickRandom(candidates);
-    }
-
-    return best;
+  // Fallback: relax resolution floor
+  if (filtered.length === 0) {
+    filtered = images.filter(img => img.file_path);
   }
 
-  return null;
-}
+  if (filtered.length === 0) return null;
 
-export { selectBackdrop, selectPoster };
+  // If there are English or null-lang posters, prefer that subset
+  // but don't hard-exclude others — the scoring handles preference
+  const pool = buildPool(filtered, scorePoster);
+  return pickRandom(pool);
+}

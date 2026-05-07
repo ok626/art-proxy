@@ -66,114 +66,162 @@ function scoreTmdbPoster(img) {
   return avg * 3.0 + res * 1.5 + votes * 0.5;
 }
 
-// ─── Backdrop pool ────────────────────────────────────────────────────────────
+function buildScoredPool(candidates, scoreFn) {
+  if (candidates.length === 0) return [];
+  const sorted   = [...candidates].sort((a, b) => scoreFn(b) - scoreFn(a));
+  const topScore = scoreFn(sorted[0]);
+  const pool     = sorted.length <= 3
+    ? sorted
+    : sorted.filter(img => scoreFn(img) >= topScore * 0.60);
+  return pool.length > 0 ? pool : [sorted[0]];
+}
 
-export function getTmdbBackdropPool(backdrops, size) {
+function getFloors(images) {
+  const voteFloor = images.some(img => (img.vote_count || 0) >= MIN_VOTES) ? MIN_VOTES : 1;
+  const maxAvg    = Math.max(...images.map(img => img.vote_average || 0));
+  const avgFloor  = maxAvg >= 5.0 ? 5.0 : maxAvg * 0.75;
+  return { voteFloor, avgFloor };
+}
+
+// ─── Backdrop pools ───────────────────────────────────────────────────────────
+
+/**
+ * Returns quality-filtered textless backdrops only.
+ * Used for merging with Fanart when Fanart has textless but not enough.
+ */
+export function getTmdbTextlessBackdropPool(backdrops, size) {
   if (!backdrops || backdrops.length === 0) return [];
 
-  const allTextless = backdrops.filter(img => img.iso_639_1 === null);
-  const relevantSet = allTextless.length > 0 ? allTextless : backdrops;
+  const textless = backdrops.filter(img => img.iso_639_1 === null && img.file_path);
+  if (textless.length === 0) return [];
 
-  const voteFloor = relevantSet.some(img => (img.vote_count || 0) >= MIN_VOTES) ? MIN_VOTES : 1;
-  const maxAvg    = Math.max(...relevantSet.map(img => img.vote_average || 0));
-  const avgFloor  = maxAvg >= 5.0 ? 5.0 : maxAvg * 0.75;
+  const { voteFloor, avgFloor } = getFloors(textless);
 
-  // Textless + full quality filters
-  let candidates = allTextless.filter(img =>
+  // Step 1: full quality filters
+  let candidates = textless.filter(img =>
     (img.width || 0) >= BACKDROP_MIN_WIDTH &&
     (img.vote_count || 0) >= voteFloor &&
-    (img.vote_average || 0) >= avgFloor &&
-    img.file_path
+    (img.vote_average || 0) >= avgFloor
   );
 
-  // Relax resolution, keep vote filters
+  // Step 2: relax resolution
   if (candidates.length === 0) {
-    candidates = allTextless.filter(img =>
+    candidates = textless.filter(img =>
       (img.vote_count || 0) >= voteFloor &&
-      (img.vote_average || 0) >= avgFloor &&
-      img.file_path
+      (img.vote_average || 0) >= avgFloor
     );
   }
 
-  // Relax everything, textless only
-  if (candidates.length === 0) {
-    candidates = allTextless.filter(img => img.file_path);
-  }
+  // Step 3: relax all quality, keep textless
+  if (candidates.length === 0) candidates = textless;
 
-  // Ultimate fallback: any backdrop
-  if (candidates.length === 0) {
-    candidates = backdrops.filter(img => img.file_path);
-  }
-
-  if (candidates.length === 0) return [];
-
-  const sorted   = [...candidates].sort((a, b) => scoreTmdbBackdrop(b) - scoreTmdbBackdrop(a));
-  const topScore = scoreTmdbBackdrop(sorted[0]);
-
-  const pool = sorted.length <= 3
-    ? sorted
-    : sorted.filter(img => scoreTmdbBackdrop(img) >= topScore * 0.60);
-
-  return (pool.length > 0 ? pool : [sorted[0]])
+  return buildScoredPool(candidates, scoreTmdbBackdrop)
     .map(img => ({ url: buildImageUrl(img.file_path, size) }));
 }
 
-// ─── Poster pool ──────────────────────────────────────────────────────────────
+/**
+ * Returns best available backdrops regardless of language.
+ * Used only when Fanart has no textless at all.
+ * Tries textless first, then any language.
+ */
+export function getTmdbAnyBackdropPool(backdrops, size) {
+  if (!backdrops || backdrops.length === 0) return [];
 
-export function getTmdbPosterPool(posters, originalLanguage, size) {
-  if (!posters || posters.length === 0) return [];
+  const textless = backdrops.filter(img => img.iso_639_1 === null && img.file_path);
 
-  const englishPosters  = posters.filter(img => img.iso_639_1 === 'en');
-  const relevantPosters = englishPosters.length > 0 ? englishPosters : posters;
+  // Try textless with quality filters first
+  const textlessPool = getTmdbTextlessBackdropPool(backdrops, size);
+  if (textlessPool.length > 0) return textlessPool;
 
-  const voteFloor = relevantPosters.some(img => (img.vote_count || 0) >= MIN_VOTES) ? MIN_VOTES : 1;
-  const maxAvg    = Math.max(...relevantPosters.map(img => img.vote_average || 0));
-  const avgFloor  = maxAvg >= 5.0 ? 5.0 : maxAvg * 0.75;
-
-  const filterPosters = (imgs) => imgs.filter(img =>
-    (img.width || 0) >= POSTER_MIN_WIDTH &&
-    (img.vote_count || 0) >= voteFloor &&
-    (img.vote_average || 0) >= avgFloor &&
-    img.file_path
-  );
-
-  // English + full quality filters
-  let candidates = filterPosters(englishPosters);
-
-  // Fallback to original language + full quality filters
-  if (candidates.length === 0 && originalLanguage && originalLanguage !== 'en') {
-    const origPosters = posters.filter(img => img.iso_639_1 === originalLanguage);
-    candidates = filterPosters(origPosters);
+  // Textless exists but nothing passed quality — use all textless unfiltered
+  if (textless.length > 0) {
+    return buildScoredPool(textless, scoreTmdbBackdrop)
+      .map(img => ({ url: buildImageUrl(img.file_path, size) }));
   }
 
-  // Relax resolution + votes, keep avgFloor, English only
+  // No textless at all — use any backdrop
+  const any = backdrops.filter(img => img.file_path);
+  if (any.length === 0) return [];
+  return buildScoredPool(any, scoreTmdbBackdrop)
+    .map(img => ({ url: buildImageUrl(img.file_path, size) }));
+}
+
+// ─── Poster pools ─────────────────────────────────────────────────────────────
+
+/**
+ * Returns quality-filtered English posters only.
+ * Used for merging with Fanart when Fanart has English but not enough.
+ */
+export function getTmdbEnglishPosterPool(posters, size) {
+  if (!posters || posters.length === 0) return [];
+
+  const english = posters.filter(img => img.iso_639_1 === 'en' && img.file_path);
+  if (english.length === 0) return [];
+
+  const { voteFloor, avgFloor } = getFloors(english);
+
+  // Step 1: full quality filters
+  let candidates = english.filter(img =>
+    (img.width || 0) >= POSTER_MIN_WIDTH &&
+    (img.vote_count || 0) >= voteFloor &&
+    (img.vote_average || 0) >= avgFloor
+  );
+
+  // Step 2: relax resolution
   if (candidates.length === 0) {
-    candidates = englishPosters.filter(img =>
-      (img.vote_average || 0) >= avgFloor &&
-      img.file_path
+    candidates = english.filter(img =>
+      (img.vote_count || 0) >= voteFloor &&
+      (img.vote_average || 0) >= avgFloor
     );
   }
 
-  // Relax everything, English only
-  if (candidates.length === 0) {
-    candidates = englishPosters.filter(img => img.file_path);
+  // Step 3: relax all quality, keep English
+  if (candidates.length === 0) candidates = english;
+
+  return buildScoredPool(candidates, scoreTmdbPoster)
+    .map(img => ({ url: buildImageUrl(img.file_path, size) }));
+}
+
+/**
+ * Returns best available posters regardless of language.
+ * Used only when Fanart has no English at all.
+ * Priority: English → original language → any language.
+ */
+export function getTmdbAnyPosterPool(posters, originalLanguage, size) {
+  if (!posters || posters.length === 0) return [];
+
+  const english  = posters.filter(img => img.iso_639_1 === 'en' && img.file_path);
+  const origLang = originalLanguage && originalLanguage !== 'en'
+    ? posters.filter(img => img.iso_639_1 === originalLanguage && img.file_path)
+    : [];
+
+  // Try English first (with quality filters)
+  const englishPool = getTmdbEnglishPosterPool(posters, size);
+  if (englishPool.length > 0) return englishPool;
+
+  // English exists but nothing passed quality — use all English unfiltered
+  if (english.length > 0) {
+    return buildScoredPool(english, scoreTmdbPoster)
+      .map(img => ({ url: buildImageUrl(img.file_path, size) }));
   }
 
-  // Ultimate fallback: any poster
-  if (candidates.length === 0) {
-    candidates = posters.filter(img => img.file_path);
+  // No English at all — try original language with quality filters
+  if (origLang.length > 0) {
+    const { voteFloor, avgFloor } = getFloors(origLang);
+    let candidates = origLang.filter(img =>
+      (img.width || 0) >= POSTER_MIN_WIDTH &&
+      (img.vote_count || 0) >= voteFloor &&
+      (img.vote_average || 0) >= avgFloor
+    );
+    if (candidates.length === 0) candidates = origLang;
+    return buildScoredPool(candidates, scoreTmdbPoster)
+      .map(img => ({ url: buildImageUrl(img.file_path, size) }));
   }
 
-  if (candidates.length === 0) return [];
-
-  const sorted   = [...candidates].sort((a, b) => scoreTmdbPoster(b) - scoreTmdbPoster(a));
-  const topScore = scoreTmdbPoster(sorted[0]);
-
-  const pool = sorted.length <= 3
-    ? sorted
-    : sorted.filter(img => scoreTmdbPoster(img) >= topScore * 0.60);
-
-  return (pool.length > 0 ? pool : [sorted[0]])
+  // Absolute last resort — any poster any language
+  const any = posters.filter(img => img.file_path);
+  if (any.length === 0) return [];
+  return buildScoredPool(any, scoreTmdbPoster)
     .map(img => ({ url: buildImageUrl(img.file_path, size) }));
 }
 

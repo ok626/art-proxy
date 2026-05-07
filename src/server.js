@@ -3,8 +3,10 @@ import express from 'express';
 import {
   fetchTmdbImages,
   fetchTvdbId,
-  getTmdbBackdropPool,
-  getTmdbPosterPool,
+  getTmdbTextlessBackdropPool,
+  getTmdbAnyBackdropPool,
+  getTmdbEnglishPosterPool,
+  getTmdbAnyPosterPool,
 } from './tmdb.js';
 import { fetchFanartImages } from './fanart.js';
 import { selectBackdrop, selectPoster } from './selector.js';
@@ -17,25 +19,20 @@ const TMDB_KEY      = process.env.TMDB_API_KEY;
 const FANART_KEY    = process.env.FANART_API_KEY;
 const POSTER_SIZE   = process.env.POSTER_SIZE                || 'w780';
 const BACKDROP_SIZE = process.env.BACKDROP_SIZE              || 'w1280';
-const POOL_TTL      = parseInt(process.env.POOL_CACHE_TTL       || '21600', 10);
-const POSTER_SEL_TTL    = parseInt(process.env.POSTER_SELECTION_TTL    || '86400', 10);
-const BACKDROP_SEL_TTL  = parseInt(process.env.BACKDROP_SELECTION_TTL  || '0',     10);
+const POOL_TTL      = parseInt(process.env.POOL_CACHE_TTL          || '21600', 10);
+const POSTER_SEL_TTL   = parseInt(process.env.POSTER_SELECTION_TTL   || '86400', 10);
+const BACKDROP_SEL_TTL = parseInt(process.env.BACKDROP_SELECTION_TTL || '0',     10);
 
 if (!TMDB_KEY)   { console.error('ERROR: TMDB_API_KEY not set.');   process.exit(1); }
 if (!FANART_KEY) { console.error('ERROR: FANART_API_KEY not set.'); process.exit(1); }
 
-// Raw API response caches
 const tmdbRawCache   = new TtlCache(parseInt(process.env.TMDB_CACHE_TTL   || '3600', 10));
 const fanartRawCache = new TtlCache(parseInt(process.env.FANART_CACHE_TTL || '3600', 10));
+const poolCache      = new TtlCache(POOL_TTL);
 
-// Pool cache — stores the combined filtered candidate URL list per title
-const poolCache = new TtlCache(POOL_TTL);
-
-// Selection caches — null if TTL is 0 (always pick fresh)
 const posterSelCache   = POSTER_SEL_TTL   > 0 ? new TtlCache(POSTER_SEL_TTL)   : null;
 const backdropSelCache = BACKDROP_SEL_TTL > 0 ? new TtlCache(BACKDROP_SEL_TTL) : null;
 
-// Rotators — guarantee no repeats until full pool is exhausted
 const backdropRotator = new Rotator();
 const posterRotator   = new Rotator();
 
@@ -60,7 +57,7 @@ function parseParam(param) {
 }
 
 async function getTmdbData(type, tmdbId) {
-  const key = `tmdb:${type}:${tmdbId}`;
+  const key    = `tmdb:${type}:${tmdbId}`;
   const cached = tmdbRawCache.get(key);
   if (cached) return cached;
   const data = await fetchTmdbImages(type, tmdbId, TMDB_KEY);
@@ -69,14 +66,14 @@ async function getTmdbData(type, tmdbId) {
 }
 
 async function getFanartData(type, tmdbId) {
-  const key = `fanart:${type}:${tmdbId}`;
+  const key    = `fanart:${type}:${tmdbId}`;
   const cached = fanartRawCache.get(key);
   if (cached) return cached;
 
   let fanartId = tmdbId;
   if (type === 'series') {
     const tvdbKey = `tvdb:${tmdbId}`;
-    let tvdbId = tmdbRawCache.get(tvdbKey);
+    let tvdbId    = tmdbRawCache.get(tvdbKey);
     if (!tvdbId) {
       tvdbId = await fetchTvdbId(tmdbId, TMDB_KEY);
       if (tvdbId) tmdbRawCache.set(tvdbKey, tvdbId);
@@ -91,7 +88,7 @@ async function getFanartData(type, tmdbId) {
 }
 
 async function getPool(type, tmdbId, artType) {
-  const key = `pool:${artType}:${type}:${tmdbId}`;
+  const key    = `pool:${artType}:${type}:${tmdbId}`;
   const cached = poolCache.get(key);
   if (cached) return cached;
 
@@ -102,11 +99,13 @@ async function getPool(type, tmdbId, artType) {
 
   let pool;
   if (artType === 'backdrop') {
-    const tmdbPool = getTmdbBackdropPool(tmdb.backdrops, BACKDROP_SIZE);
-    pool = selectBackdrop(fanart.backdrops, tmdbPool);
+    const tmdbTextlessPool = getTmdbTextlessBackdropPool(tmdb.backdrops, BACKDROP_SIZE);
+    const tmdbAnyPool      = getTmdbAnyBackdropPool(tmdb.backdrops, BACKDROP_SIZE);
+    pool = selectBackdrop(fanart.backdrops, tmdbTextlessPool, tmdbAnyPool);
   } else {
-    const tmdbPool = getTmdbPosterPool(tmdb.posters, tmdb.originalLanguage, POSTER_SIZE);
-    pool = selectPoster(fanart.posters, tmdbPool);
+    const tmdbEnglishPool = getTmdbEnglishPosterPool(tmdb.posters, POSTER_SIZE);
+    const tmdbAnyPool     = getTmdbAnyPosterPool(tmdb.posters, tmdb.originalLanguage, POSTER_SIZE);
+    pool = selectPoster(fanart.posters, tmdbEnglishPool, tmdbAnyPool);
   }
 
   if (pool && pool.length > 0) poolCache.set(key, pool);

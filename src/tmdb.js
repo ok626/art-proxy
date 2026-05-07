@@ -20,7 +20,7 @@ export async function fetchTmdbImages(type, tmdbId, apiKey) {
     throw new Error(`TMDB error ${imagesRes.status}: ${err.status_message || 'unknown'}`);
   }
 
-  const imagesData = await imagesRes.json();
+  const imagesData  = await imagesRes.json();
   const detailsData = detailsRes.ok ? await detailsRes.json() : {};
   const originalLanguage = detailsData.original_language || null;
 
@@ -54,16 +54,16 @@ const MIN_VOTES          = 3;
 
 function scoreTmdbBackdrop(img) {
   const res   = Math.log10((img.width || 0) * (img.height || 0) + 1);
-  const votes = Math.log10((img.vote_count || 0) + 1);
   const avg   = img.vote_average || 0;
-  return votes * 3.0 + res * 2.0 + avg * 0.5;
+  const votes = Math.log10((img.vote_count || 0) + 1);
+  return avg * 3.0 + res * 2.0 + votes * 0.5;
 }
 
 function scoreTmdbPoster(img) {
   const res   = Math.log10((img.width || 0) * (img.height || 0) + 1);
-  const votes = Math.log10((img.vote_count || 0) + 1);
   const avg   = img.vote_average || 0;
-  return votes * 3.0 + res * 1.5 + avg * 0.5;
+  const votes = Math.log10((img.vote_count || 0) + 1);
+  return avg * 3.0 + res * 1.5 + votes * 0.5;
 }
 
 // ─── Backdrop pool ────────────────────────────────────────────────────────────
@@ -71,22 +71,24 @@ function scoreTmdbPoster(img) {
 export function getTmdbBackdropPool(backdrops, size) {
   if (!backdrops || backdrops.length === 0) return [];
 
-  const voteFloor = backdrops.some(img => (img.vote_count || 0) >= MIN_VOTES) ? MIN_VOTES : 1;
-  const avgFloor  = backdrops.some(img => (img.vote_average || 0) >= 5.0) ? 5.0 : 0;
+  const allTextless = backdrops.filter(img => img.iso_639_1 === null);
+  const relevantSet = allTextless.length > 0 ? allTextless : backdrops;
+
+  const voteFloor = relevantSet.some(img => (img.vote_count || 0) >= MIN_VOTES) ? MIN_VOTES : 1;
+  const maxAvg    = Math.max(...relevantSet.map(img => img.vote_average || 0));
+  const avgFloor  = maxAvg >= 5.0 ? 5.0 : maxAvg * 0.75;
 
   // Textless + full quality filters
-  let candidates = backdrops.filter(img =>
-    img.iso_639_1 === null &&
+  let candidates = allTextless.filter(img =>
     (img.width || 0) >= BACKDROP_MIN_WIDTH &&
     (img.vote_count || 0) >= voteFloor &&
     (img.vote_average || 0) >= avgFloor &&
     img.file_path
   );
 
-  // Relax resolution but keep vote filters
+  // Relax resolution, keep vote filters
   if (candidates.length === 0) {
-    candidates = backdrops.filter(img =>
-      img.iso_639_1 === null &&
+    candidates = allTextless.filter(img =>
       (img.vote_count || 0) >= voteFloor &&
       (img.vote_average || 0) >= avgFloor &&
       img.file_path
@@ -95,7 +97,7 @@ export function getTmdbBackdropPool(backdrops, size) {
 
   // Relax everything, textless only
   if (candidates.length === 0) {
-    candidates = backdrops.filter(img => img.iso_639_1 === null && img.file_path);
+    candidates = allTextless.filter(img => img.file_path);
   }
 
   // Ultimate fallback: any backdrop
@@ -115,11 +117,12 @@ export function getTmdbBackdropPool(backdrops, size) {
 export function getTmdbPosterPool(posters, originalLanguage, size) {
   if (!posters || posters.length === 0) return [];
 
-  const englishPosters = posters.filter(img => img.iso_639_1 === 'en');
+  const englishPosters  = posters.filter(img => img.iso_639_1 === 'en');
   const relevantPosters = englishPosters.length > 0 ? englishPosters : posters;
 
   const voteFloor = relevantPosters.some(img => (img.vote_count || 0) >= MIN_VOTES) ? MIN_VOTES : 1;
-  const avgFloor  = relevantPosters.some(img => (img.vote_average || 0) >= 5.0) ? 5.0 : 0;
+  const maxAvg    = Math.max(...relevantPosters.map(img => img.vote_average || 0));
+  const avgFloor  = maxAvg >= 5.0 ? 5.0 : maxAvg * 0.75;
 
   const filterPosters = (imgs) => imgs.filter(img =>
     (img.width || 0) >= POSTER_MIN_WIDTH &&
@@ -129,17 +132,17 @@ export function getTmdbPosterPool(posters, originalLanguage, size) {
   );
 
   // English + full quality filters
-  let candidates = filterPosters(posters.filter(img => img.iso_639_1 === 'en'));
+  let candidates = filterPosters(englishPosters);
 
-  // Fallback to original language with full quality filters
+  // Fallback to original language + full quality filters
   if (candidates.length === 0 && originalLanguage && originalLanguage !== 'en') {
-    candidates = filterPosters(posters.filter(img => img.iso_639_1 === originalLanguage));
+    const origPosters = posters.filter(img => img.iso_639_1 === originalLanguage);
+    candidates = filterPosters(origPosters);
   }
 
-  // Relax resolution + vote filters, English only
+  // Relax resolution + votes, keep avgFloor, English only
   if (candidates.length === 0) {
-    candidates = posters.filter(img =>
-      img.iso_639_1 === 'en' &&
+    candidates = englishPosters.filter(img =>
       (img.vote_average || 0) >= avgFloor &&
       img.file_path
     );
@@ -147,7 +150,7 @@ export function getTmdbPosterPool(posters, originalLanguage, size) {
 
   // Relax everything, English only
   if (candidates.length === 0) {
-    candidates = posters.filter(img => img.iso_639_1 === 'en' && img.file_path);
+    candidates = englishPosters.filter(img => img.file_path);
   }
 
   // Ultimate fallback: any poster

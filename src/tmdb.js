@@ -108,8 +108,14 @@ export function getTmdbBackdropPool(backdrops, size) {
   if (candidates.length === 0) return [];
 
   const sorted   = [...candidates].sort((a, b) => scoreTmdbBackdrop(b) - scoreTmdbBackdrop(a));
-  const poolSize = Math.max(1, Math.ceil(sorted.length * 0.50));
-  return sorted.slice(0, poolSize).map(img => ({ url: buildImageUrl(img.file_path, size) }));
+  const topScore = scoreTmdbBackdrop(sorted[0]);
+
+  const pool = sorted.length <= 3
+    ? sorted
+    : sorted.filter(img => scoreTmdbBackdrop(img) >= topScore * 0.60);
+
+  return (pool.length > 0 ? pool : [sorted[0]])
+    .map(img => ({ url: buildImageUrl(img.file_path, size) }));
 }
 
 // ─── Poster pool ──────────────────────────────────────────────────────────────
@@ -161,9 +167,13 @@ export function getTmdbPosterPool(posters, originalLanguage, size) {
   if (candidates.length === 0) return [];
 
   const sorted   = [...candidates].sort((a, b) => scoreTmdbPoster(b) - scoreTmdbPoster(a));
-  const poolSize = Math.max(1, Math.ceil(sorted.length * 0.50));
-  return sorted
-    .slice(0, poolSize)
+  const topScore = scoreTmdbPoster(sorted[0]);
+
+  const pool = sorted.length <= 3
+    ? sorted
+    : sorted.filter(img => scoreTmdbPoster(img) >= topScore * 0.60);
+
+  return (pool.length > 0 ? pool : [sorted[0]])
     .map(img => ({ url: buildImageUrl(img.file_path, size) }));
 }
 

@@ -1,6 +1,6 @@
-# tmdb-art-proxy
+# art-proxy
 
-A self-hostable Docker app that serves TMDB movie/TV posters and backdrops via simple redirect URLs — designed for use with Stremio addons and catalogs.
+A self-hostable Docker app that serves Fanart/TMDB Movie/TV posters and backdrops via simple redirect URLs — designed for use with Stremio addons and catalogs.
 
 ## URL Format
 

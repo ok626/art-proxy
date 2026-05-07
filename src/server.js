@@ -9,34 +9,45 @@ import {
 import { fetchFanartImages } from './fanart.js';
 import { selectBackdrop, selectPoster } from './selector.js';
 import { TtlCache } from './cache.js';
+import { Rotator } from './rotator.js';
 
 const app           = express();
-const PORT          = process.env.PORT                    || 3000;
+const PORT          = process.env.PORT                       || 3000;
 const TMDB_KEY      = process.env.TMDB_API_KEY;
 const FANART_KEY    = process.env.FANART_API_KEY;
-const POSTER_SIZE   = process.env.POSTER_SIZE             || 'w780';
-const BACKDROP_SIZE = process.env.BACKDROP_SIZE           || 'w1280';
-const POOL_TTL      = parseInt(process.env.POOL_CACHE_TTL          || '21600', 10);
+const POSTER_SIZE   = process.env.POSTER_SIZE                || 'w780';
+const BACKDROP_SIZE = process.env.BACKDROP_SIZE              || 'w1280';
+const POOL_TTL      = parseInt(process.env.POOL_CACHE_TTL       || '21600', 10);
 const POSTER_SEL_TTL    = parseInt(process.env.POSTER_SELECTION_TTL    || '86400', 10);
 const BACKDROP_SEL_TTL  = parseInt(process.env.BACKDROP_SELECTION_TTL  || '0',     10);
 
 if (!TMDB_KEY)   { console.error('ERROR: TMDB_API_KEY not set.');   process.exit(1); }
 if (!FANART_KEY) { console.error('ERROR: FANART_API_KEY not set.'); process.exit(1); }
 
+// Raw API response caches
+const tmdbRawCache   = new TtlCache(parseInt(process.env.TMDB_CACHE_TTL   || '3600', 10));
+const fanartRawCache = new TtlCache(parseInt(process.env.FANART_CACHE_TTL || '3600', 10));
+
 // Pool cache — stores the combined filtered candidate URL list per title
 const poolCache = new TtlCache(POOL_TTL);
 
-// Selection caches — stores the final chosen URL per title
-// Poster: locked in for 24h by default
-// Backdrop: TTL 0 = never cache = always pick fresh random from pool
+// Selection caches — null if TTL is 0 (always pick fresh)
 const posterSelCache   = POSTER_SEL_TTL   > 0 ? new TtlCache(POSTER_SEL_TTL)   : null;
 const backdropSelCache = BACKDROP_SEL_TTL > 0 ? new TtlCache(BACKDROP_SEL_TTL) : null;
 
+// Rotators — guarantee no repeats until full pool is exhausted
+const backdropRotator = new Rotator();
+const posterRotator   = new Rotator();
+
 setInterval(() => {
+  tmdbRawCache.purgeExpired();
+  fanartRawCache.purgeExpired();
   poolCache.purgeExpired();
   posterSelCache?.purgeExpired();
   backdropSelCache?.purgeExpired();
 }, 30 * 60 * 1000);
+
+// ─── Helpers ──────────────────────────────────────────────────────────────────
 
 function parseParam(param) {
   const clean = param.replace(/\.(jpg|jpeg|png|webp)$/i, '');
@@ -47,10 +58,6 @@ function parseParam(param) {
   if (!/^\d+$/.test(tmdbId)) return null;
   return { type, tmdbId };
 }
-
-// Separate tmdb cache just for raw API responses (TVDB lookups etc)
-const tmdbRawCache   = new TtlCache(parseInt(process.env.TMDB_CACHE_TTL   || '3600', 10));
-const fanartRawCache = new TtlCache(parseInt(process.env.FANART_CACHE_TTL || '3600', 10));
 
 async function getTmdbData(type, tmdbId) {
   const key = `tmdb:${type}:${tmdbId}`;
@@ -106,11 +113,6 @@ async function getPool(type, tmdbId, artType) {
   return pool;
 }
 
-function pickRandom(arr) {
-  if (!arr || arr.length === 0) return null;
-  return arr[Math.floor(Math.random() * arr.length)];
-}
-
 // ─── Routes ───────────────────────────────────────────────────────────────────
 
 app.get('/backdrop/:param', async (req, res) => {
@@ -120,14 +122,16 @@ app.get('/backdrop/:param', async (req, res) => {
   const selKey = `backdrop:${parsed.type}:${parsed.tmdbId}`;
 
   try {
-    // Check selection cache (may be null if BACKDROP_SELECTION_TTL=0)
     let imageUrl = backdropSelCache?.get(selKey) || null;
 
     if (!imageUrl) {
       const pool = await getPool(parsed.type, parsed.tmdbId, 'backdrop');
       if (!pool || pool.length === 0) return res.status(404).json({ error: 'No backdrop found.' });
 
-      imageUrl = pickRandom(pool).url;
+      const chosen = backdropRotator.next(selKey, pool);
+      if (!chosen) return res.status(404).json({ error: 'No backdrop found.' });
+
+      imageUrl = chosen.url;
       backdropSelCache?.set(selKey, imageUrl);
     }
 
@@ -152,7 +156,10 @@ app.get('/poster/:param', async (req, res) => {
       const pool = await getPool(parsed.type, parsed.tmdbId, 'poster');
       if (!pool || pool.length === 0) return res.status(404).json({ error: 'No poster found.' });
 
-      imageUrl = pickRandom(pool).url;
+      const chosen = posterRotator.next(selKey, pool);
+      if (!chosen) return res.status(404).json({ error: 'No poster found.' });
+
+      imageUrl = chosen.url;
       posterSelCache?.set(selKey, imageUrl);
     }
 

@@ -36,6 +36,9 @@ const backdropSelCache = BACKDROP_SEL_TTL > 0 ? new TtlCache(BACKDROP_SEL_TTL) :
 const backdropRotator = new Rotator();
 const posterRotator   = new Rotator();
 
+const inFlightPools = new Map();
+const inFlightSel   = new Map();
+
 setInterval(() => {
   tmdbRawCache.purgeExpired();
   fanartRawCache.purgeExpired();
@@ -49,11 +52,18 @@ setInterval(() => {
 function parseParam(param) {
   const clean = param.replace(/\.(jpg|jpeg|png|webp)$/i, '');
   const parts = clean.split(':');
-  if (parts.length !== 3 || parts[0] !== 'tmdb') return null;
-  const [, type, tmdbId] = parts;
-  if (!['movie', 'series'].includes(type)) return null;
-  if (!/^\d+$/.test(tmdbId)) return null;
-  return { type, tmdbId };
+
+  // Unified format: {tvdb_id}:tmdb:{type}:{tmdb_id}
+  // tvdb_id is ignored for movies, used for series to skip TVDB lookup
+  if (parts.length === 4 && parts[1] === 'tmdb') {
+    const [tvdbId, , type, tmdbId] = parts;
+    if (!['movie', 'series'].includes(type)) return null;
+    if (!/^\d+$/.test(tmdbId)) return null;
+    const resolvedTvdbId = type === 'series' && /^\d+$/.test(tvdbId) ? tvdbId : null;
+    return { type, tmdbId, tvdbId: resolvedTvdbId };
+  }
+
+  return null;
 }
 
 async function getTmdbData(type, tmdbId) {
@@ -65,21 +75,27 @@ async function getTmdbData(type, tmdbId) {
   return data;
 }
 
-async function getFanartData(type, tmdbId) {
+async function getFanartData(type, tmdbId, tvdbId) {
   const key    = `fanart:${type}:${tmdbId}`;
   const cached = fanartRawCache.get(key);
   if (cached) return cached;
 
   let fanartId = tmdbId;
   if (type === 'series') {
-    const tvdbKey = `tvdb:${tmdbId}`;
-    let tvdbId    = tmdbRawCache.get(tvdbKey);
-    if (!tvdbId) {
-      tvdbId = await fetchTvdbId(tmdbId, TMDB_KEY);
-      if (tvdbId) tmdbRawCache.set(tvdbKey, tvdbId);
+    if (tvdbId) {
+      // Use the TVDB ID passed in from the URL — no API lookup needed
+      fanartId = tvdbId;
+    } else {
+      // Fall back to looking up TVDB ID from TMDB
+      const tvdbKey = `tvdb:${tmdbId}`;
+      let resolvedTvdbId = tmdbRawCache.get(tvdbKey);
+      if (!resolvedTvdbId) {
+        resolvedTvdbId = await fetchTvdbId(tmdbId, TMDB_KEY);
+        if (resolvedTvdbId) tmdbRawCache.set(tvdbKey, resolvedTvdbId);
+      }
+      if (!resolvedTvdbId) return { backdrops: [], posters: [] };
+      fanartId = resolvedTvdbId;
     }
-    if (!tvdbId) return { backdrops: [], posters: [] };
-    fanartId = tvdbId;
   }
 
   const data = await fetchFanartImages(type, fanartId, FANART_KEY);
@@ -87,13 +103,13 @@ async function getFanartData(type, tmdbId) {
   return data;
 }
 
-async function getPool(type, tmdbId, artType) {
+async function getPool(type, tmdbId, artType, tvdbId) {
   const key    = `pool:${artType}:${type}:${tmdbId}`;
   const cached = poolCache.get(key);
   if (cached) return cached;
 
   const [fanart, tmdb] = await Promise.all([
-    getFanartData(type, tmdbId),
+    getFanartData(type, tmdbId, tvdbId),
     getTmdbData(type, tmdbId),
   ]);
 
@@ -112,29 +128,48 @@ async function getPool(type, tmdbId, artType) {
   return pool;
 }
 
+function getPoolDeduped(type, tmdbId, artType, tvdbId) {
+  const key = `${artType}:${type}:${tmdbId}`;
+  if (inFlightPools.has(key)) return inFlightPools.get(key);
+  const promise = getPool(type, tmdbId, artType, tvdbId).finally(() => inFlightPools.delete(key));
+  inFlightPools.set(key, promise);
+  return promise;
+}
+
+function getSelectionDeduped(selKey, pool, rotator, selCache) {
+  if (inFlightSel.has(selKey)) return inFlightSel.get(selKey);
+
+  const promise = Promise.resolve().then(() => {
+    const cached = selCache?.get(selKey);
+    if (cached) return cached;
+
+    const chosen = rotator.next(selKey, pool);
+    if (!chosen) return null;
+
+    selCache?.set(selKey, chosen.url);
+    return chosen.url;
+  }).finally(() => inFlightSel.delete(selKey));
+
+  inFlightSel.set(selKey, promise);
+  return promise;
+}
+
 // ─── Routes ───────────────────────────────────────────────────────────────────
 
 app.get('/backdrop/:param', async (req, res) => {
   const parsed = parseParam(req.params.param);
-  if (!parsed) return res.status(400).json({ error: 'Invalid param. Use: tmdb:{movie|series}:{id}.jpg' });
+  if (!parsed) return res.status(400).json({ error: 'Invalid param. Use: {tvdb_id}:tmdb:{movie|series}:{tmdb_id}.jpg' });
 
   const selKey = `backdrop:${parsed.type}:${parsed.tmdbId}`;
 
   try {
     let imageUrl = backdropSelCache?.get(selKey) || null;
-    console.log(`[backdrop] ${selKey} | sel_cache=${imageUrl ? 'HIT: ' + imageUrl : 'MISS'}`);
 
     if (!imageUrl) {
-      const pool = await getPool(parsed.type, parsed.tmdbId, 'backdrop');
-      console.log(`[backdrop] ${selKey} | pool_size=${pool ? pool.length : 0}`);
+      const pool = await getPoolDeduped(parsed.type, parsed.tmdbId, 'backdrop', parsed.tvdbId);
       if (!pool || pool.length === 0) return res.status(404).json({ error: 'No backdrop found.' });
-
-      const chosen = backdropRotator.next(selKey, pool);
-      if (!chosen) return res.status(404).json({ error: 'No backdrop found.' });
-
-      imageUrl = chosen.url;
-      backdropSelCache?.set(selKey, imageUrl);
-      console.log(`[backdrop] ${selKey} | newly chosen=${imageUrl}`);
+      imageUrl = await getSelectionDeduped(selKey, pool, backdropRotator, backdropSelCache);
+      if (!imageUrl) return res.status(404).json({ error: 'No backdrop found.' });
     }
 
     res.set('Cache-Control', 'public, max-age=86400');
@@ -147,7 +182,7 @@ app.get('/backdrop/:param', async (req, res) => {
 
 app.get('/poster/:param', async (req, res) => {
   const parsed = parseParam(req.params.param);
-  if (!parsed) return res.status(400).json({ error: 'Invalid param. Use: tmdb:{movie|series}:{id}.jpg' });
+  if (!parsed) return res.status(400).json({ error: 'Invalid param. Use: {tvdb_id}:tmdb:{movie|series}:{tmdb_id}.jpg' });
 
   const selKey = `poster:${parsed.type}:${parsed.tmdbId}`;
 
@@ -155,14 +190,10 @@ app.get('/poster/:param', async (req, res) => {
     let imageUrl = posterSelCache?.get(selKey) || null;
 
     if (!imageUrl) {
-      const pool = await getPool(parsed.type, parsed.tmdbId, 'poster');
+      const pool = await getPoolDeduped(parsed.type, parsed.tmdbId, 'poster', parsed.tvdbId);
       if (!pool || pool.length === 0) return res.status(404).json({ error: 'No poster found.' });
-
-      const chosen = posterRotator.next(selKey, pool);
-      if (!chosen) return res.status(404).json({ error: 'No poster found.' });
-
-      imageUrl = chosen.url;
-      posterSelCache?.set(selKey, imageUrl);
+      imageUrl = await getSelectionDeduped(selKey, pool, posterRotator, posterSelCache);
+      if (!imageUrl) return res.status(404).json({ error: 'No poster found.' });
     }
 
     res.set('Cache-Control', 'public, max-age=86400');

@@ -122,9 +122,11 @@ app.get('/backdrop/:param', async (req, res) => {
 
   try {
     let imageUrl = backdropSelCache?.get(selKey) || null;
+    console.log(`[backdrop] ${selKey} | sel_cache=${imageUrl ? 'HIT: ' + imageUrl : 'MISS'}`);
 
     if (!imageUrl) {
       const pool = await getPool(parsed.type, parsed.tmdbId, 'backdrop');
+      console.log(`[backdrop] ${selKey} | pool_size=${pool ? pool.length : 0}`);
       if (!pool || pool.length === 0) return res.status(404).json({ error: 'No backdrop found.' });
 
       const chosen = backdropRotator.next(selKey, pool);
@@ -132,6 +134,7 @@ app.get('/backdrop/:param', async (req, res) => {
 
       imageUrl = chosen.url;
       backdropSelCache?.set(selKey, imageUrl);
+      console.log(`[backdrop] ${selKey} | newly chosen=${imageUrl}`);
     }
 
     res.set('Cache-Control', 'public, max-age=86400');

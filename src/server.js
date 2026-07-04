@@ -172,7 +172,8 @@ app.get('/backdrop/:param', async (req, res) => {
       if (!imageUrl) return res.status(404).json({ error: 'No backdrop found.' });
     }
 
-    res.set('Cache-Control', 'public, max-age=86400');
+    const ccTtl = BACKDROP_SEL_TTL > 0 ? BACKDROP_SEL_TTL : POOL_TTL;
+    res.set('Cache-Control', `public, max-age=${ccTtl}`);
     return res.redirect(302, imageUrl);
   } catch (err) {
     console.error(`[backdrop] ${parsed.type}:${parsed.tmdbId} — ${err.message}`);
@@ -196,7 +197,8 @@ app.get('/poster/:param', async (req, res) => {
       if (!imageUrl) return res.status(404).json({ error: 'No poster found.' });
     }
 
-    res.set('Cache-Control', 'public, max-age=86400');
+    const ccTtl = POSTER_SEL_TTL > 0 ? POSTER_SEL_TTL : POOL_TTL;
+    res.set('Cache-Control', `public, max-age=${ccTtl}`);
     return res.redirect(302, imageUrl);
   } catch (err) {
     console.error(`[poster] ${parsed.type}:${parsed.tmdbId} — ${err.message}`);

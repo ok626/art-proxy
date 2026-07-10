@@ -4,9 +4,13 @@ import {
   fetchTmdbImages,
   fetchTvdbId,
   getTmdbTextlessBackdropPool,
+  getTmdbTextlessBackdropPoolTrust,
   getTmdbAnyBackdropPool,
+  getTmdbAnyBackdropPoolTrust,
   getTmdbEnglishPosterPool,
+  getTmdbEnglishPosterPoolTrust,
   getTmdbAnyPosterPool,
+  getTmdbAnyPosterPoolTrust,
 } from './tmdb.js';
 import { fetchFanartImages } from './fanart.js';
 import { selectBackdrop, selectPoster } from './selector.js';
@@ -19,12 +23,16 @@ const TMDB_KEY      = process.env.TMDB_API_KEY;
 const FANART_KEY    = process.env.FANART_API_KEY;
 const POSTER_SIZE   = process.env.POSTER_SIZE                || 'w780';
 const BACKDROP_SIZE = process.env.BACKDROP_SIZE              || 'w1280';
-const POOL_TTL      = parseInt(process.env.POOL_CACHE_TTL          || '21600', 10);
-const POSTER_SEL_TTL   = parseInt(process.env.POSTER_SELECTION_TTL   || '86400', 10);
-const BACKDROP_SEL_TTL = parseInt(process.env.BACKDROP_SELECTION_TTL || '0',     10);
+const POOL_TTL      = parseInt(process.env.POOL_CACHE_TTL          || '604800', 10);
+const POSTER_SEL_TTL   = parseInt(process.env.POSTER_SELECTION_TTL   || '604800', 10);
+const BACKDROP_SEL_TTL = parseInt(process.env.BACKDROP_SELECTION_TTL || '43200',  10);
 
-if (!TMDB_KEY)   { console.error('ERROR: TMDB_API_KEY not set.');   process.exit(1); }
-if (!FANART_KEY) { console.error('ERROR: FANART_API_KEY not set.'); process.exit(1); }
+// Mode flags
+const TMDB_ONLY  = process.env.TMDB_ONLY  === 'true';
+const TMDB_TRUST = process.env.TMDB_TRUST === 'true';
+
+if (!TMDB_KEY) { console.error('ERROR: TMDB_API_KEY not set.'); process.exit(1); }
+if (!FANART_KEY && !TMDB_ONLY) { console.error('ERROR: FANART_API_KEY not set. Set TMDB_ONLY=true to run without Fanart.'); process.exit(1); }
 
 const tmdbRawCache   = new TtlCache(parseInt(process.env.TMDB_CACHE_TTL   || '3600', 10));
 const fanartRawCache = new TtlCache(parseInt(process.env.FANART_CACHE_TTL || '3600', 10));
@@ -54,7 +62,6 @@ function parseParam(param) {
   const parts = clean.split(':');
 
   // Unified format: {tvdb_id}:tmdb:{type}:{tmdb_id}
-  // tvdb_id is ignored for movies, used for series to skip TVDB lookup
   if (parts.length === 4 && parts[1] === 'tmdb') {
     const [tvdbId, , type, tmdbId] = parts;
     if (!['movie', 'series'].includes(type)) return null;
@@ -83,10 +90,8 @@ async function getFanartData(type, tmdbId, tvdbId) {
   let fanartId = tmdbId;
   if (type === 'series') {
     if (tvdbId) {
-      // Use the TVDB ID passed in from the URL — no API lookup needed
       fanartId = tvdbId;
     } else {
-      // Fall back to looking up TVDB ID from TMDB
       const tvdbKey = `tvdb:${tmdbId}`;
       let resolvedTvdbId = tmdbRawCache.get(tvdbKey);
       if (!resolvedTvdbId) {
@@ -108,20 +113,43 @@ async function getPool(type, tmdbId, artType, tvdbId) {
   const cached = poolCache.get(key);
   if (cached) return cached;
 
-  const [fanart, tmdb] = await Promise.all([
-    getFanartData(type, tmdbId, tvdbId),
-    getTmdbData(type, tmdbId),
-  ]);
+  // Always fetch TMDB — needed in all modes
+  const tmdb = await getTmdbData(type, tmdbId);
 
   let pool;
-  if (artType === 'backdrop') {
-    const tmdbTextlessPool = getTmdbTextlessBackdropPool(tmdb.backdrops, BACKDROP_SIZE);
-    const tmdbAnyPool      = getTmdbAnyBackdropPool(tmdb.backdrops, BACKDROP_SIZE);
-    pool = selectBackdrop(fanart.backdrops, tmdbTextlessPool, tmdbAnyPool);
+
+  if (TMDB_ONLY) {
+    // ── TMDB only mode ──────────────────────────────────────────────────────
+    if (artType === 'backdrop') {
+      pool = TMDB_TRUST
+        ? getTmdbAnyBackdropPoolTrust(tmdb.backdrops, BACKDROP_SIZE)
+        : getTmdbAnyBackdropPool(tmdb.backdrops, BACKDROP_SIZE);
+    } else {
+      pool = TMDB_TRUST
+        ? getTmdbAnyPosterPoolTrust(tmdb.posters, tmdb.originalLanguage, POSTER_SIZE)
+        : getTmdbAnyPosterPool(tmdb.posters, tmdb.originalLanguage, POSTER_SIZE);
+    }
   } else {
-    const tmdbEnglishPool = getTmdbEnglishPosterPool(tmdb.posters, POSTER_SIZE);
-    const tmdbAnyPool     = getTmdbAnyPosterPool(tmdb.posters, tmdb.originalLanguage, POSTER_SIZE);
-    pool = selectPoster(fanart.posters, tmdbEnglishPool, tmdbAnyPool);
+    // ── Fanart + TMDB mode ───────────────────────────────────────────────────
+    const fanart = await getFanartData(type, tmdbId, tvdbId);
+
+    if (artType === 'backdrop') {
+      const tmdbTextlessPool = TMDB_TRUST
+        ? getTmdbTextlessBackdropPoolTrust(tmdb.backdrops, BACKDROP_SIZE)
+        : getTmdbTextlessBackdropPool(tmdb.backdrops, BACKDROP_SIZE);
+      const tmdbAnyPool = TMDB_TRUST
+        ? getTmdbAnyBackdropPoolTrust(tmdb.backdrops, BACKDROP_SIZE)
+        : getTmdbAnyBackdropPool(tmdb.backdrops, BACKDROP_SIZE);
+      pool = selectBackdrop(fanart.backdrops, tmdbTextlessPool, tmdbAnyPool);
+    } else {
+      const tmdbEnglishPool = TMDB_TRUST
+        ? getTmdbEnglishPosterPoolTrust(tmdb.posters, POSTER_SIZE)
+        : getTmdbEnglishPosterPool(tmdb.posters, POSTER_SIZE);
+      const tmdbAnyPool = TMDB_TRUST
+        ? getTmdbAnyPosterPoolTrust(tmdb.posters, tmdb.originalLanguage, POSTER_SIZE)
+        : getTmdbAnyPosterPool(tmdb.posters, tmdb.originalLanguage, POSTER_SIZE);
+      pool = selectPoster(fanart.posters, tmdbEnglishPool, tmdbAnyPool);
+    }
   }
 
   if (pool && pool.length > 0) poolCache.set(key, pool);
@@ -142,10 +170,8 @@ function getSelectionDeduped(selKey, pool, rotator, selCache) {
   const promise = Promise.resolve().then(() => {
     const cached = selCache?.get(selKey);
     if (cached) return cached;
-
     const chosen = rotator.next(selKey, pool);
     if (!chosen) return null;
-
     selCache?.set(selKey, chosen.url);
     return chosen.url;
   }).finally(() => inFlightSel.delete(selKey));
@@ -206,11 +232,15 @@ app.get('/poster/:param', async (req, res) => {
   }
 });
 
-app.get('/health', (req, res) => res.json({ status: 'ok' }));
+app.get('/health', (req, res) => res.json({
+  status: 'ok',
+  mode: TMDB_ONLY ? 'tmdb_only' : 'fanart+tmdb',
+  scoring: TMDB_TRUST ? 'trust' : 'scored',
+}));
 
 app.listen(PORT, () => {
   console.log(`tmdb-art-proxy running on port ${PORT}`);
+  console.log(`Mode: ${TMDB_ONLY ? 'TMDB only' : 'Fanart + TMDB'} | Scoring: ${TMDB_TRUST ? 'trust' : 'scored'}`);
   console.log(`Poster size: ${POSTER_SIZE} | Backdrop size: ${BACKDROP_SIZE}`);
-  console.log(`Pool cache TTL: ${POOL_TTL}s`);
-  console.log(`Poster selection TTL: ${POSTER_SEL_TTL}s | Backdrop selection TTL: ${BACKDROP_SEL_TTL === 0 ? 'always random' : BACKDROP_SEL_TTL + 's'}`);
+  console.log(`Pool TTL: ${POOL_TTL}s | Poster sel TTL: ${POSTER_SEL_TTL}s | Backdrop sel TTL: ${BACKDROP_SEL_TTL === 0 ? 'always random' : BACKDROP_SEL_TTL + 's'}`);
 });
